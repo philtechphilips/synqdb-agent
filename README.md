@@ -71,7 +71,7 @@ Or place them in a `.env` file in the directory where you run the agent:
 
 ```env
 SYNQDB_AGENT_KEY=abc-123-def-456
-SYNQDB_SERVER_URL=https://api.synqdb.com
+SYNQDB_SERVER_URL=https://api.synqdb.live
 ```
 
 ### Key resolution order

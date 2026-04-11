@@ -32,10 +32,10 @@ const saved = loadConfig();
 
 // --save flag: persist key (and optional server URL) then exit
 if (process.argv.includes('--save')) {
-  const keyArg = process.argv.find((a) => !a.startsWith('-') && process.argv.indexOf(a) > 1);
-  const urlArg = process.argv[process.argv.indexOf('--save') + 1];
-  const keyToSave = keyArg || process.env.SYNQDB_AGENT_KEY;
-  const urlToSave = (!urlArg?.startsWith('-') ? urlArg : undefined) || process.env.SYNQDB_SERVER_URL;
+  const saveIdx = process.argv.indexOf('--save');
+  const nonFlagArgs = process.argv.slice(saveIdx + 1).filter((a) => !a.startsWith('-'));
+  const keyToSave = nonFlagArgs[0] || process.env.SYNQDB_AGENT_KEY;
+  const urlToSave = nonFlagArgs[1] || process.env.SYNQDB_SERVER_URL;
 
   if (!keyToSave) {
     console.error('Usage: synqdb-agent --save <agentKey> [serverUrl]');
@@ -44,7 +44,7 @@ if (process.argv.includes('--save')) {
 
   saveConfig({
     agentKey: keyToSave,
-    ...(urlToSave ? { serverUrl: urlToSave } : {}),
+    serverUrl: urlToSave || null,
   });
 
   console.log(`Saved to ${CONFIG_PATH}`);
@@ -63,8 +63,8 @@ const agentKey =
 const serverUrl =
   process.argv[3] ||
   process.env.SYNQDB_SERVER_URL ||
-  saved.serverUrl ||
-  'https://api.synqdb.com';
+  (saved.serverUrl?.startsWith('http') ? saved.serverUrl : null) ||
+  'https://api.synqdb.live';
 
 if (!agentKey) {
   console.error('');
