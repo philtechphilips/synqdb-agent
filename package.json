@@ -1,0 +1,23 @@
+{
+  "name": "synqdb-agent",
+  "version": "1.0.0",
+  "description": "Local database relay agent for SynqDB — connects your local databases to the SynqDB cloud dashboard",
+  "main": "index.js",
+  "bin": {
+    "synqdb-agent": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "mysql2": "^3.6.0",
+    "mssql": "^10.0.0",
+    "pg": "^8.11.0",
+    "socket.io-client": "^4.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
