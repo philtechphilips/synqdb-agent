@@ -26,212 +26,263 @@ function saveConfig(data) {
   });
 }
 
-// ─── Resolve agentKey and serverUrl ──────────────────────────────────────────
+// ─── Resolve serverUrl ────────────────────────────────────────────────────────
 
 const saved = loadConfig();
 
-// --save flag: persist key (and optional server URL) then exit
-if (process.argv.includes('--save')) {
-  const saveIdx = process.argv.indexOf('--save');
-  const nonFlagArgs = process.argv.slice(saveIdx + 1).filter((a) => !a.startsWith('-'));
-  const keyToSave = nonFlagArgs[0] || process.env.SYNQDB_AGENT_KEY;
-  const urlToSave = nonFlagArgs[1] || process.env.SYNQDB_SERVER_URL;
-
-  if (!keyToSave) {
-    console.error('Usage: synqdb-agent --save <agentKey> [serverUrl]');
-    process.exit(1);
-  }
-
-  saveConfig({
-    agentKey: keyToSave,
-    serverUrl: urlToSave || null,
-  });
-
-  console.log(`Saved to ${CONFIG_PATH}`);
-  console.log(`  agentKey: ${keyToSave}`);
-  if (urlToSave) console.log(`  serverUrl: ${urlToSave}`);
-  console.log('');
-  console.log('Run `synqdb-agent` with no arguments to start.');
-  process.exit(0);
-}
-
-const agentKey =
-  process.argv[2] ||
-  process.env.SYNQDB_AGENT_KEY ||
-  saved.agentKey;
-
 const serverUrl =
-  process.argv[3] ||
   process.env.SYNQDB_SERVER_URL ||
   (saved.serverUrl?.startsWith('http') ? saved.serverUrl : null) ||
   'https://api.synqdb.live';
 
-if (!agentKey) {
-  console.error('');
-  console.error('  No agent key found. Options:');
-  console.error('');
-  console.error('  1. Save key once (recommended):');
-  console.error('       synqdb-agent --save <agentKey>');
-  console.error('       synqdb-agent');
-  console.error('');
-  console.error('  2. Pass key each time:');
-  console.error('       synqdb-agent <agentKey>');
-  console.error('');
-  console.error('  3. Set environment variable:');
-  console.error('       SYNQDB_AGENT_KEY=<agentKey> synqdb-agent');
-  console.error('');
-  process.exit(1);
+const frontendUrl =
+  process.env.SYNQDB_FRONTEND_URL ||
+  (saved.frontendUrl?.startsWith('http') ? saved.frontendUrl : null) ||
+  'https://synqdb.live';
+
+// ─── login command ────────────────────────────────────────────────────────────
+
+if (process.argv[2] === 'login') {
+  runLogin().catch((err) => {
+    console.error('Login failed:', err.message);
+    process.exit(1);
+  });
+} else {
+  runAgent();
 }
 
-// If key came from args (not saved), prompt user to save it
-if (process.argv[2] && !saved.agentKey) {
-  console.log(`Tip: run \`synqdb-agent --save ${process.argv[2]}\` to avoid typing the key next time.`);
-}
-
-console.log(`Connecting to SynqDB at ${serverUrl} ...`);
-
-// Cache connections by a composite key so we don't open a new connection per query
-const connectionCache = new Map();
-
-function cacheKey(payload) {
-  return `${payload.type}:${payload.host}:${payload.port}:${payload.database}:${payload.username}`;
-}
-
-// ─── MySQL ────────────────────────────────────────────────────────────────────
-
-async function runMySQL(payload) {
-  const mysql = require('mysql2/promise');
-  const key = cacheKey(payload);
-  let pool = connectionCache.get(key);
-  if (!pool) {
-    pool = mysql.createPool({
-      host: payload.host,
-      port: payload.port,
-      user: payload.username,
-      password: payload.password || undefined,
-      database: payload.database,
-      waitForConnections: true,
-      connectionLimit: 5,
-      multipleStatements: true,
-    });
-    connectionCache.set(key, pool);
+async function runLogin() {
+  // 1. Create a short-lived login token from the server
+  const initRes = await fetch(`${serverUrl}/v1/auth/cli-login/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!initRes.ok) {
+    throw new Error(`Server error: ${initRes.status}`);
   }
-  const [rows] = await pool.query(payload.sql, payload.params || []);
-  const data = Array.isArray(rows) ? rows : [rows];
-  return { rows: data, rowCount: data.length };
-}
+  const { loginToken } = await initRes.json();
 
-// ─── PostgreSQL ───────────────────────────────────────────────────────────────
+  // 2. Open the authorize page in the user's browser
+  const authorizeUrl = `${frontendUrl}/agent/authorize?token=${loginToken}`;
+  console.log('');
+  console.log('  Opening browser for authentication...');
+  console.log(`  If the browser does not open, visit:\n  ${authorizeUrl}`);
+  console.log('');
 
-async function runPostgres(payload) {
-  const { Pool } = require('pg');
-  const key = cacheKey(payload);
-  let pool = connectionCache.get(key);
-  if (!pool) {
-    pool = new Pool({
-      host: payload.host,
-      port: payload.port,
-      user: payload.username,
-      password: payload.password || undefined,
-      database: payload.database,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-    });
-    connectionCache.set(key, pool);
+  try {
+    const open = require('open');
+    await open(authorizeUrl);
+  } catch {
+    // open might not be available in all environments — URL is printed above
   }
-  const res = await pool.query(payload.sql, payload.params || []);
-  return { rows: res.rows, rowCount: res.rowCount ?? res.rows.length };
-}
 
-// ─── MSSQL ────────────────────────────────────────────────────────────────────
+  // 3. Poll the server until the user approves (or token expires ~5 min)
+  const POLL_INTERVAL_MS = 2000;
+  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
 
-async function runMSSQL(payload) {
-  const mssql = require('mssql');
-  const key = cacheKey(payload);
-  let pool = connectionCache.get(key);
-  if (!pool || !pool.connected) {
-    pool = new mssql.ConnectionPool({
-      server: payload.host,
-      port: payload.port || 1433,
-      user: payload.username,
-      password: payload.password || undefined,
-      database: payload.database,
-      options: { encrypt: true, trustServerCertificate: true },
-    });
-    await pool.connect();
-    connectionCache.set(key, pool);
-  }
-  const request = pool.request();
-  if (payload.namedParams) {
-    for (const [name, value] of Object.entries(payload.namedParams)) {
-      request.input(name, value);
+  process.stdout.write('  Waiting for approval');
+
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+    process.stdout.write('.');
+
+    let pollRes;
+    try {
+      pollRes = await fetch(`${serverUrl}/v1/auth/cli-login/poll/${loginToken}`);
+    } catch {
+      // transient network error — keep retrying
+      continue;
+    }
+
+    if (!pollRes.ok) {
+      process.stdout.write('\n');
+      throw new Error(`Token expired or invalid (server returned ${pollRes.status})`);
+    }
+
+    const body = await pollRes.json();
+
+    if (body.status === 'authorized') {
+      process.stdout.write('\n');
+      saveConfig({ agentKey: body.agentKey, serverUrl });
+      console.log('');
+      console.log('  ✓ Authenticated! Agent key saved to', CONFIG_PATH);
+      console.log('  Run `synqdb-agent` with no arguments to start the agent.');
+      console.log('');
+      return;
     }
   }
-  const result = await request.query(payload.sql);
-  const rows = result.recordset || [];
-  return { rows, rowCount: result.rowsAffected?.[0] ?? rows.length };
+
+  process.stdout.write('\n');
+  throw new Error('Login timed out. Please run `synqdb-agent login` again.');
 }
 
-// ─── Dispatch ─────────────────────────────────────────────────────────────────
-
-async function executeQuery(payload) {
-  switch (payload.type) {
-    case 'mysql':   return runMySQL(payload);
-    case 'postgres': return runPostgres(payload);
-    case 'mssql':   return runMSSQL(payload);
-    default: throw new Error(`Unsupported database type: ${payload.type}`);
-  }
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Socket.IO ────────────────────────────────────────────────────────────────
+// ─── Agent runner ─────────────────────────────────────────────────────────────
 
-const socket = io(`${serverUrl}/agent`, {
-  reconnectionDelay: 2000,
-  reconnectionDelayMax: 10000,
-  transports: ['websocket'],
-});
+function runAgent() {
+  const agentKey = process.env.SYNQDB_AGENT_KEY || saved.agentKey;
 
-socket.on('connect', () => {
-  console.log('Connected. Authenticating ...');
-  socket.emit('register', { agentKey });
-});
-
-socket.on('registered', ({ clusterId }) => {
-  console.log(`Authenticated. Serving cluster: ${clusterId}`);
-  // If this was the first run with a key arg, auto-save it for next time
-  if (process.argv[2] && !saved.agentKey) {
-    saveConfig({ agentKey, serverUrl });
-    console.log(`Key saved to ${CONFIG_PATH} — next time just run \`synqdb-agent\``);
+  if (!agentKey) {
+    console.error('');
+    console.error('  No agent key found. Run:');
+    console.error('');
+    console.error('    synqdb-agent login');
+    console.error('');
+    console.error('  This opens your browser to authenticate — no key to copy.');
+    console.error('');
+    process.exit(1);
   }
-});
 
-socket.on('auth_error', ({ message }) => {
-  console.error(`Authentication failed: ${message}`);
-  process.exit(1);
-});
+  console.log(`Connecting to SynqDB at ${serverUrl} ...`);
 
-socket.on('query', async (payload) => {
-  const { requestId } = payload;
-  try {
-    const { rows, rowCount } = await executeQuery(payload);
-    socket.emit('result', { requestId, rows, rowCount });
-  } catch (err) {
-    console.error(`Query error [${requestId}]:`, err.message);
-    socket.emit('error', { requestId, message: err.message });
+  // Cache connections by a composite key so we don't open a new connection per query
+  const connectionCache = new Map();
+
+  function cacheKey(payload) {
+    return `${payload.type}:${payload.host}:${payload.port}:${payload.database}:${payload.username}`;
   }
-});
 
-socket.on('disconnect', (reason) => {
-  console.log(`Disconnected: ${reason}. Reconnecting ...`);
-});
+  // ─── MySQL ──────────────────────────────────────────────────────────────────
 
-socket.on('connect_error', (err) => {
-  console.error('Connection error:', err.message);
-});
+  async function runMySQL(payload) {
+    const mysql = require('mysql2/promise');
+    const key = cacheKey(payload);
+    let pool = connectionCache.get(key);
+    if (!pool) {
+      pool = mysql.createPool({
+        host: payload.host,
+        port: payload.port,
+        user: payload.username,
+        password: payload.password || undefined,
+        database: payload.database,
+        waitForConnections: true,
+        connectionLimit: 5,
+        multipleStatements: true,
+      });
+      connectionCache.set(key, pool);
+    }
+    const [rows] = await pool.query(payload.sql, payload.params || []);
+    const data = Array.isArray(rows) ? rows : [rows];
+    return { rows: data, rowCount: data.length };
+  }
 
-process.on('SIGINT', () => {
-  console.log('\nShutting down agent.');
-  socket.disconnect();
-  process.exit(0);
-});
+  // ─── PostgreSQL ─────────────────────────────────────────────────────────────
+
+  async function runPostgres(payload) {
+    const { Pool } = require('pg');
+    const key = cacheKey(payload);
+    let pool = connectionCache.get(key);
+    if (!pool) {
+      pool = new Pool({
+        host: payload.host,
+        port: payload.port,
+        user: payload.username,
+        password: payload.password || undefined,
+        database: payload.database,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+      });
+      connectionCache.set(key, pool);
+    }
+    const res = await pool.query(payload.sql, payload.params || []);
+    return { rows: res.rows, rowCount: res.rowCount ?? res.rows.length };
+  }
+
+  // ─── MSSQL ──────────────────────────────────────────────────────────────────
+
+  async function runMSSQL(payload) {
+    const mssql = require('mssql');
+    const key = cacheKey(payload);
+    let pool = connectionCache.get(key);
+    if (!pool || !pool.connected) {
+      pool = new mssql.ConnectionPool({
+        server: payload.host,
+        port: payload.port || 1433,
+        user: payload.username,
+        password: payload.password || undefined,
+        database: payload.database,
+        options: { encrypt: true, trustServerCertificate: true },
+      });
+      await pool.connect();
+      connectionCache.set(key, pool);
+    }
+    const request = pool.request();
+    if (payload.namedParams) {
+      for (const [name, value] of Object.entries(payload.namedParams)) {
+        request.input(name, value);
+      }
+    }
+    const result = await request.query(payload.sql);
+    const rows = result.recordset || [];
+    return { rows, rowCount: result.rowsAffected?.[0] ?? rows.length };
+  }
+
+  // ─── Dispatch ────────────────────────────────────────────────────────────────
+
+  async function executeQuery(payload) {
+    switch (payload.type) {
+      case 'mysql':    return runMySQL(payload);
+      case 'postgres': return runPostgres(payload);
+      case 'mssql':    return runMSSQL(payload);
+      default: throw new Error(`Unsupported database type: ${payload.type}`);
+    }
+  }
+
+  // ─── Socket.IO ──────────────────────────────────────────────────────────────
+
+  const socket = io(`${serverUrl}/agent`, {
+    reconnectionDelay: 2000,
+    reconnectionDelayMax: 10000,
+    transports: ['websocket'],
+  });
+
+  socket.on('connect', () => {
+    console.log('Connected. Authenticating ...');
+    socket.emit('register', { agentKey });
+  });
+
+  socket.on('registered', ({ clusterId }) => {
+    console.log(`Authenticated. Serving cluster: ${clusterId}`);
+  });
+
+  socket.on('auth_error', ({ message }) => {
+    if (message && message.includes('rotated')) {
+      console.error(`\n  ${message}`);
+      console.error('  Run `synqdb-agent login` to re-authenticate.\n');
+    } else {
+      console.error(`Authentication failed: ${message}`);
+      console.error('Run `synqdb-agent login` to re-authenticate.');
+    }
+    process.exit(1);
+  });
+
+  socket.on('query', async (payload) => {
+    const { requestId } = payload;
+    try {
+      const { rows, rowCount } = await executeQuery(payload);
+      socket.emit('result', { requestId, rows, rowCount });
+    } catch (err) {
+      console.error(`Query error [${requestId}]:`, err.message);
+      socket.emit('error', { requestId, message: err.message });
+    }
+  });
+
+  socket.on('disconnect', (reason) => {
+    console.log(`Disconnected: ${reason}. Reconnecting ...`);
+  });
+
+  socket.on('connect_error', (err) => {
+    console.error('Connection error:', err.message);
+  });
+
+  process.on('SIGINT', () => {
+    console.log('\nShutting down agent.');
+    socket.disconnect();
+    process.exit(0);
+  });
+}

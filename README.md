@@ -1,6 +1,6 @@
 # synqdb-agent
 
-Local database relay agent for [SynqDB](https://synqdb.com) — connects your local databases to the SynqDB cloud dashboard without any firewall changes or port forwarding.
+Local database relay agent for [SynqDB](https://synqdb.live) — connects your local databases to the SynqDB cloud dashboard without any firewall changes or port forwarding.
 
 ## How it works
 
@@ -24,78 +24,72 @@ npm install -g synqdb-agent
 Or run without installing:
 
 ```bash
-npx synqdb-agent <agentKey>
+npx synqdb-agent login
+npx synqdb-agent
 ```
 
-## Getting your agent key
+## Authentication
 
-1. Open the [SynqDB dashboard](https://synqdb.com)
-2. Click **Add Connection**
-3. Toggle **Local Database**
-4. Fill in your local DB credentials and click **Generate Agent Key**
-5. Copy the key — it is only shown once
-
-## Usage
-
-### Recommended — save once, run forever
-
-On first use, save your key:
+Authentication is browser-based — no keys to copy or paste.
 
 ```bash
-synqdb-agent --save <agentKey>
+synqdb-agent login
 ```
 
-From then on, just run:
+This opens your browser to the SynqDB app. Log in (if you aren't already) and click **Authorize**. The CLI detects approval automatically and saves the credential to `~/.synqdb-agent`.
+
+After that, just run:
 
 ```bash
 synqdb-agent
 ```
 
-The key is stored in `~/.synqdb-agent` (readable only by your user account).
+## Usage
 
-### Pass the key each time
-
-```bash
-synqdb-agent <agentKey>
-```
-
-The first successful connection will also auto-save the key so future runs need no arguments.
-
-### Using environment variables
+### Step 1 — Log in
 
 ```bash
-SYNQDB_AGENT_KEY=abc-123-def-456 synqdb-agent
+synqdb-agent login
 ```
 
-Or place them in a `.env` file in the directory where you run the agent:
+Opens your browser → click **Authorize** → done. Credential is saved automatically.
+
+### Step 2 — Start the agent
+
+```bash
+synqdb-agent
+```
+
+The agent connects and stays running. Queries from your dashboard are routed through it in real time.
+
+### Environment variable override
+
+If you need to supply the key directly (e.g. in a CI/CD pipeline or Docker container), set:
 
 ```env
-SYNQDB_AGENT_KEY=abc-123-def-456
-SYNQDB_SERVER_URL=https://api.synqdb.live
+SYNQDB_AGENT_KEY=<your-agent-key>
 ```
 
-### Key resolution order
+The key resolution order is:
+1. `SYNQDB_AGENT_KEY` environment variable
+2. Saved credential at `~/.synqdb-agent` (written by `synqdb-agent login`)
 
-The agent looks for the key in this order:
+### Custom server URL
 
-1. CLI argument (`synqdb-agent <key>`)
-2. `SYNQDB_AGENT_KEY` environment variable
-3. Saved config at `~/.synqdb-agent`
+```env
+SYNQDB_SERVER_URL=https://api.synqdb.live
+SYNQDB_FRONTEND_URL=https://synqdb.live
+```
 
-### Environment variables
-
-| Variable | Description | Default |
-|---|---|---|
-| `SYNQDB_AGENT_KEY` | Your agent key | — |
-| `SYNQDB_SERVER_URL` | SynqDB API URL | `https://api.synqdb.com` |
+Or place them in a `.env` file in the directory where you run the agent.
 
 ## Running persistently
 
-To keep the agent running in the background across terminal sessions and machine restarts, use [PM2](https://pm2.keymetrics.io):
+To keep the agent running across terminal sessions and machine restarts, use [PM2](https://pm2.keymetrics.io):
 
 ```bash
 npm install -g pm2
-pm2 start synqdb-agent --name synqdb-agent -- <agentKey>
+pm2 start synqdb-agent --name synqdb-agent
 pm2 save
 pm2 startup
 ```
@@ -109,6 +103,10 @@ pm2 restart synqdb-agent
 pm2 stop synqdb-agent
 ```
 
+## Revoking access
+
+If you need to invalidate the current credential (e.g. the machine was compromised), go to **Dashboard → Project Settings → Local Agent → Rotate Key**. Any running agent will be disconnected. Run `synqdb-agent login` to re-authenticate.
+
 ## Supported databases
 
 | Database | Driver |
@@ -119,10 +117,11 @@ pm2 stop synqdb-agent
 
 ## Security
 
-- Your agent key is a 128-bit random UUID — treat it like a password
+- Authentication uses short-lived browser tokens (5-minute TTL) — no long-lived secrets are ever transmitted in a URL or terminal output
+- The saved credential in `~/.synqdb-agent` is readable only by your user account (mode `0600`)
 - The agent connects **outbound only** — no inbound ports are opened on your machine
 - All queries are constructed server-side; the agent never builds SQL from user input
-- Credentials stay on your machine and are never sent to the SynqDB API
+- Database credentials stay on your machine and are never sent to the SynqDB API
 
 ## License
 

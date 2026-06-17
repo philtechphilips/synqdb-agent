@@ -1,6 +1,6 @@
 {
   "name": "synqdb-agent",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Local database relay agent for SynqDB — connects your local databases to the SynqDB cloud dashboard",
   "main": "index.js",
   "bin": {
