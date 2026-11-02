@@ -1,7 +1,7 @@
 {
   "name": "synqdb-agent",
-  "version": "1.0.5",
-  "description": "Local database relay agent for SynqDB — connects your local databases to the SynqDB cloud dashboard",
+  "version": "1.2.0",
+  "description": "Local database relay agent for SynqDB \u2014 connects your local MySQL, PostgreSQL, SQL Server and SQLite databases to the SynqDB dashboard",
   "main": "index.js",
   "bin": {
     "synqdb-agent": "index.js"
@@ -10,17 +10,18 @@
     "start": "node index.js"
   },
   "keywords": [
-    "synqdb",
-    "database",
     "agent",
-    "relay",
+    "database",
+    "mssql",
     "mysql",
     "postgres",
-    "mssql"
+    "relay",
+    "sqlite",
+    "synqdb"
   ],
   "dependencies": {
-    "dotenv": "^16.0.0",
-    "mssql": "^10.0.0",
+    "dotenv": "^17.2.3",
+    "mssql": "^11.0.1",
     "mysql2": "^3.6.0",
     "pg": "^8.11.0",
     "socket.io-client": "^4.7.0"
@@ -28,5 +29,8 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "optionalDependencies": {
+    "better-sqlite3": "^12.4.1"
+  }
 }
