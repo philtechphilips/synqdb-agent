@@ -1,0 +1,35 @@
+name: Security scan
+
+# Trivy checks the lockfile's dependencies for known vulnerabilities, the
+# code for committed secrets, and config files for misconfigurations.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so new advisories are caught even when the code doesn't change.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan dependencies, secrets and config
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          # Fail on serious issues that have a fix available.
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
